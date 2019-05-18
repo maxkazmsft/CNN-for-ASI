@@ -12,7 +12,7 @@ from torch.utils.data import Dataset, DataLoader
 
 if torch.cuda.is_available():
     # yup, apparently for data parallel models this has cuda:0... oh well
-    device_str = ','.join([str(x) for x in DEVICE_IDS])
+    device_str = os.environ["CUDA_VISIBLE_DEVICES"]
     device = torch.device("cuda:"+device_str)
 else:
     raise Exception("No GPU detected for parallel scoring!")
@@ -25,7 +25,7 @@ from joblib import Parallel, delayed
 # from joblib.pool import has_shareable_memory
 
 NUM_CORES = multiprocessing.cpu_count()
-print("Preprocessing will run on {} CPU cores on your machine.".format(NUM_CORES))
+print("Post-processing will run on {} CPU cores on your machine.".format(NUM_CORES))
 
 from os.path import join
 from data import readSEGY, get_slice
@@ -46,8 +46,8 @@ RESOLUTION = 1
 # Inline, crossline, timeslice or full
 SLICE = "inline"
 SLICE_NUM = 339
-# BATCH_SIZE = 2**12
-BATCH_SIZE = 3096
+BATCH_SIZE = 2**12
+#BATCH_SIZE = 4050
 
 # use distributed scoring
 if RESOLUTION != 1:
@@ -62,9 +62,9 @@ network.load_state_dict(torch.load(join(DATASET_NAME, "saved_model.pt")))
 network.eval()
 
 class ModelWrapper(nn.Module):
-  """
-  Wrap TextureNet for DataParallel to invoke classify method
-  """
+    """
+    Wrap TextureNet for DataParallel to invoke classify method
+    """
 
     def __init__(self, texture_model):
         super(ModelWrapper, self).__init__()
