@@ -168,7 +168,7 @@ def worker(classified_cube, ind):
     pred_class = predictions[ind][0][0][0][0]
     classified_cube[x, y, z] = pred_class
 
-# process masks first because we COULD subset data on mask operations
+# launch workers in parallel with memory sharing ("threading" backend)
 _ = Parallel(n_jobs=NUM_CORES, backend="threading")(
     delayed(worker)(classified_cube, ind) for ind in tqdm(indices)
 )
