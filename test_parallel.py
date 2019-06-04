@@ -3,6 +3,8 @@ from __future__ import print_function
 
 import os
 
+# %%
+# initialize multiple GPUs
 DEVICE_IDS = [0, 1]
 os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(x) for x in DEVICE_IDS])
 
@@ -10,22 +12,26 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
+# %%
 if torch.cuda.is_available():
     device_str = os.environ["CUDA_VISIBLE_DEVICES"]
     device = torch.device("cuda:"+device_str)
 else:
     raise Exception("No GPU detected for parallel scoring!")
 
+# %%
+# enable multiprocessing
 # ability to perform multiprocessing
 import multiprocessing
 from joblib import Parallel, delayed
-
 # use threading instead
 # from joblib.pool import has_shareable_memory
 
 NUM_CORES = multiprocessing.cpu_count()
 print("Post-processing will run on {} CPU cores on your machine.".format(NUM_CORES))
 
+# %%
+# imports
 from os.path import join
 from data import readSEGY, get_slice
 from texture_net import TextureNet
@@ -37,6 +43,7 @@ from data import writeSEGY
 # graphical progress bar for notebooks
 from tqdm import tqdm
 
+# %%
 # Parameters
 DATASET_NAME = "F3"
 IM_SIZE = 65
@@ -52,14 +59,18 @@ BATCH_SIZE = 2**12
 if RESOLUTION != 1:
     raise Exception("Currently we only support pixel-level scoring")
 
-# Read 3D cube
+# %%
+# Read 3D input
 data, data_info = readSEGY(join(DATASET_NAME, "data.segy"))
 
-# Load trained model (run train.py to create trained
+# %%
+# Load trained model (run train.py to create trained network)
 network = TextureNet(n_classes=N_CLASSES)
 network.load_state_dict(torch.load(join(DATASET_NAME, "saved_model.pt")))
 network.eval()
 
+# %%
+# wrapper for pyTorch DataParallel
 class ModelWrapper(nn.Module):
     """
     Wrap TextureNet for DataParallel to invoke classify method
@@ -77,8 +88,7 @@ model.eval()
 
 print("RESOLUTION {}".format(RESOLUTION))
 
-##########################################################################
-
+# %%
 # Log to tensorboard
 logger = tb_logger.TBLogger("log", "Test")
 logger.log_images(
@@ -87,12 +97,14 @@ logger.log_images(
     cm="gray",
 )
 
+# %%
 # Get half window size
 window = IM_SIZE // 2
 nx, ny, nz = data.shape
 
+# %%
 # generate full list of coordinates
-# memory footprint of this isn't large yet, so not need to wrap as a generator
+# memory footprint of this isn't large yet, so no need to wrap as a generator
 x_list = range(window, nx - window + 1)
 y_list = range(window, ny - window + 1)
 z_list = range(window, nz - window + 1)
@@ -100,6 +112,9 @@ z_list = range(window, nz - window + 1)
 print("-- generating coord list --")
 # TODO: is there any way to use a generator with pyTorch data loader?
 coord_list = list(itertools.product(x_list, y_list, z_list))
+
+# %%
+# define dataset batch loader
 
 class MyDataset(Dataset):
     def __init__(self, data, window, coord_list):
@@ -126,13 +141,16 @@ class MyDataset(Dataset):
     def __len__(self):
         return self.len
 
-
+# %%
+# data parallelism
 if torch.cuda.device_count() > 1:
     print("Let's use", torch.cuda.device_count(), "GPUs!")
     model = nn.DataParallel(model)
 else:
     print("Running on a single GPU... just one")
 
+# %%
+# map to GPU
 model.to(device)
 data_torch = torch.cuda.FloatTensor(data)
 my_loader = DataLoader(
@@ -141,12 +159,14 @@ my_loader = DataLoader(
     shuffle=False,
 )
 
+# %%
 # unroll full cube
 indices = []
 predictions = []
 
 print("-- scoring on GPU --")
 
+# %%
 # Loop through center pixels in output cube
 for (chunk, index) in tqdm(my_loader):
     input = chunk.to(device)
@@ -155,6 +175,8 @@ for (chunk, index) in tqdm(my_loader):
     indices += index.tolist()
     predictions += output.tolist()
 
+# %%
+# aggregate unrolled cube from lists into 3D shape
 print("-- aggregating results --")
 
 classified_cube = np.zeros(data.shape)
@@ -164,16 +186,19 @@ def worker(classified_cube, ind):
     pred_class = predictions[ind][0][0][0][0]
     classified_cube[x, y, z] = pred_class
 
+# %%
 # launch workers in parallel with memory sharing ("threading" backend)
 _ = Parallel(n_jobs=NUM_CORES, backend="threading")(
     delayed(worker)(classified_cube, ind) for ind in tqdm(indices)
 )
 
+# %%
 print("-- writing segy --")
 in_file = join(DATASET_NAME, "data.segy".format(RESOLUTION))
 out_file = join(DATASET_NAME, "salt_{}.segy".format(RESOLUTION))
 writeSEGY(out_file, in_file, classified_cube)
 
+# %%
 print("-- logging prediction --")
 # log prediction to tensorboard
 logger = tb_logger.TBLogger("log", "Test_scored")
