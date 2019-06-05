@@ -105,9 +105,9 @@ nx, ny, nz = data.shape
 # %%
 # generate full list of coordinates
 # memory footprint of this isn't large yet, so no need to wrap as a generator
-x_list = range(window, nx - window + 1)
-y_list = range(window, ny - window + 1)
-z_list = range(window, nz - window + 1)
+x_list = range(window, nx - window)
+y_list = range(window, ny - window)
+z_list = range(window, nz - window)
 
 print("-- generating coord list --")
 # TODO: is there any way to use a generator with pyTorch data loader?
@@ -131,9 +131,9 @@ class MyDataset(Dataset):
         pixel = self.coord_list[index]
         x, y, z = pixel
         small_cube = self.data[
-            x - self.window : x + self.window,
-            y - self.window : y + self.window,
-            z - self.window : z + self.window,
+            x - self.window : x + self.window + 1,
+            y - self.window : y + self.window + 1,
+            z - self.window : z + self.window + 1,
         ]
 
         return small_cube[np.newaxis, :, :, :], index
