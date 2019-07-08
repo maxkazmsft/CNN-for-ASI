@@ -5,7 +5,8 @@ import os
 
 # %%
 # initialize multiple GPUs
-DEVICE_IDS = [0, 1]
+NGPU = 1
+DEVICE_IDS = list(range(NGPU))
 os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(x) for x in DEVICE_IDS])
 
 import torch
@@ -43,6 +44,9 @@ from data import writeSEGY
 # graphical progress bar for notebooks
 from tqdm import tqdm
 
+# custom data parallelism
+from parallel import DataParallelModel
+
 # %%
 # Parameters
 DATASET_NAME = "F3"
@@ -52,7 +56,8 @@ RESOLUTION = 1
 # Inline, crossline, timeslice or full
 SLICE = "inline"
 SLICE_NUM = 339
-BATCH_SIZE = 2**12
+#BATCH_SIZE = 2**12
+BATCH_SIZE = 2**4
 #BATCH_SIZE = 4050
 
 # use distributed scoring
@@ -145,7 +150,9 @@ class MyDataset(Dataset):
 # data parallelism
 if torch.cuda.device_count() > 1:
     print("Let's use", torch.cuda.device_count(), "GPUs!")
-    model = nn.DataParallel(model)
+    # model = nn.DataParallel(model.to(device), device_ids=DEVICE_IDS)
+    # model = DataParallelModel(model.to(device), device_ids=DEVICE_IDS)
+    model = DataParallelModel(model)
 else:
     print("Running on a single GPU... just one")
 
