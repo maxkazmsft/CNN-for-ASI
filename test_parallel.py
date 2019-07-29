@@ -3,6 +3,7 @@ from __future__ import print_function
 
 import os
 import pickle
+import json
 from copy import deepcopy
 
 N_GPU = 2
@@ -169,15 +170,16 @@ def main_worker(gpu, ngpus_per_node, args):
     y_list = range(window, ny - window)
     z_list = range(window, nz - window)
 
-    #print("-- generating coord list --")
+    print("-- generating coord list --")
     # TODO: is there any way to use a generator with pyTorch data loader?
     coord_list = list(itertools.product(x_list, y_list, z_list))
 
-    # take a subset of coord_list by chunk
+    print("take a subset of coord_list by chunk")
     coord_list = list(np.array_split(np.array(coord_list), args.world_size)[args.rank])
     coord_list = [tuple(x) for x in coord_list]
 
     # prepare the data
+    print ("setup dataset")
     # TODO: RuntimeError: cannot pin 'torch.cuda.FloatTensor' only dense CPU tensors can be pinned
     data_torch = torch.cuda.FloatTensor(data).cuda(args.gpu, non_blocking=True)
     dataset = MyDataset(data_torch, window, coord_list)
@@ -191,11 +193,12 @@ def main_worker(gpu, ngpus_per_node, args):
     # just set some default epoch
     #datasampler.set_epoch(1)
 
-    progress = ProgressMeter(
-        len(dataset),
-        [],
-        prefix="step: ")
+    #progress = ProgressMeter(
+    #    len(dataset),
+    #    [],
+    #    prefix="step: ")
 
+    print ("setting up loader")
     my_loader = DataLoader(
         dataset=dataset,
         batch_size=args.batch_size,
@@ -229,8 +232,12 @@ def main_worker(gpu, ngpus_per_node, args):
     print("here")
     #result_queue.append([deepcopy(coord_list), deepcopy(predictions)])
     # result_queue.append([coord_list, predictions])
-    with open("result_{}.pkl".format(args.rank), "wb") as f:
-        pickle.dump([coord_list, predictions], f)
+    with open("results_{}.pkl".format(args.rank), "w") as f:
+        json.dump({"coords": [(int(x[0]), int(x[1]), int(x[2])) for x in coord_list], "preds": [int(x[0][0][0][0]) for x in predictions]}, f)
+    #with open("result_predictions_{}.pkl".format(args.rank), "wb") as f:
+    #    print ("dumping predictions pickle file")
+    #    pickle.dump(predictions, f)
+    print('done')
 
 class Arguments: pass
 
@@ -255,7 +262,7 @@ def main():
     # number of parallel data loading workers
     N_WORKERS = 4
 
-    # use distributed scoring
+    # use distributed scoring+
     if RESOLUTION != 1:
         raise Exception("Currently we only support pixel-level scoring")
 
@@ -270,7 +277,7 @@ def main():
     #args.world_size = ngpus_per_node * args.world_size
     # for one VM, it's just the number of GPUs
 
-    args.n_proc_per_gpu = 1
+    args.n_proc_per_gpu = 2
     args.world_size = N_GPU*args.n_proc_per_gpu
     args.dist_url = "tcp://127.0.0.1:12345"
     args.dist_backend = "nccl"
@@ -312,7 +319,7 @@ def main():
     #return_dict = manager.dict()
     # return_dict = [None]*N_GPU
     # result_queue = multiprocessing.Queue()
-    mp.spawn(main_worker, nprocs=args.world_size, args=(ngpus_per_node, args))
+    # mp.spawn(main_worker, nprocs=args.world_size, args=(ngpus_per_node, args))
     """
     with Manager() as manager:
         results_list = manager.list()
@@ -324,15 +331,14 @@ def main():
     #    pass
 
 
-    """
     mp = multiprocessing.get_context('spawn')
     # error_queues = []
     processes = []
-    for i in range(N_GPU):
+    for i in range(args.world_size):
         # error_queue = mp.SimpleQueue()
         process = mp.Process(
             target=main_worker,
-            args=(i, ngpus_per_node, result_queue, args),
+            args=(i, ngpus_per_node, args),
             daemon=False,
         )
         process.start()
@@ -344,7 +350,7 @@ def main():
 
     # Loop on join until it returns True or raises an exception.
     # while not spawn_context.join():
-    """
+
 
 
     """
@@ -375,13 +381,13 @@ def main():
 
     # generate full list of coordinates
     # memory footprint of this isn't large yet, so not need to wrap as a generator
-    x_list = range(window, nx - window)
-    y_list = range(window, ny - window)
-    z_list = range(window, nz - window)
+    #x_list = range(window, nx - window)
+    #y_list = range(window, ny - window)
+    #z_list = range(window, nz - window)
 
-    print("-- generating coord list --")
+    #print("-- generating coord list --")
     # TODO: is there any way to use a generator with pyTorch data loader?
-    coord_list = list(itertools.product(x_list, y_list, z_list))
+    #coord_list = list(itertools.product(x_list, y_list, z_list))
     # coord_list = np.array_split(np.array(coord_list), args.world_size)
 
     # coord_list = [tuple(x) for x in list(coord_list[args.rank])]
@@ -391,18 +397,19 @@ def main():
     new_coord_list = []
     predictions = []
     for i in range(args.world_size):
-        with open("result_{}.pkl".format(i), "rb") as f:
-            [coord_list, predictions] = pickle.load(f)
 
-            new_coord_list += [results[i][0]]
-            predictions += [results[i][1]]
+        with open("results_{}.pkl".format(i), "r") as f:
+            dict = json.load(f)
 
-    assert(coord_list==new_coord_list)
+        new_coord_list += dict['coords']
+        predictions += dict['preds']
+
+    # assert(coord_list==new_coord_list)
 
     def worker(classified_cube, coord):
         x, y, z = coord
         ind = new_coord_list.index(coord)
-        pred_class = predictions[ind][0][0][0][0]
+        pred_class = predictions[ind]
         classified_cube[x, y, z] = pred_class
 
     # launch workers in parallel with memory sharing ("threading" backend)
