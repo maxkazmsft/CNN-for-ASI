@@ -6,7 +6,7 @@ import pickle
 import json
 from copy import deepcopy
 
-N_GPU = 2
+N_GPU = 8
 DEVICE_IDS = list(range(N_GPU))
 os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(x) for x in DEVICE_IDS])
 
@@ -162,6 +162,8 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # Get half window size
     window = args.im_size // 2
+    if args.debug:
+        data = data[0:3*window]
     nx, ny, nz = data.shape
 
     # generate full list of coordinates
@@ -177,6 +179,10 @@ def main_worker(gpu, ngpus_per_node, args):
     print("take a subset of coord_list by chunk")
     coord_list = list(np.array_split(np.array(coord_list), args.world_size)[args.rank])
     coord_list = [tuple(x) for x in coord_list]
+
+    # we only score first batch in debug mode
+    if args.debug:
+        coord_list = coord_list[0:args.batch_size]
 
     # prepare the data
     print ("setup dataset")
@@ -225,14 +231,16 @@ def main_worker(gpu, ngpus_per_node, args):
             # save and deal with it later on CPU
             #indices += index.tolist()
             predictions += output.tolist()
-            break
+            # just score a single batch in debug mode
+            if args.debug:
+                break
             #if i % args.print_freq == 0:
             #    progress.display(i)
 
     print("here")
     #result_queue.append([deepcopy(coord_list), deepcopy(predictions)])
     # result_queue.append([coord_list, predictions])
-    with open("results_{}.pkl".format(args.rank), "w") as f:
+    with open("results_{}.json".format(args.rank), "w") as f:
         json.dump({"coords": [(int(x[0]), int(x[1]), int(x[2])) for x in coord_list], "preds": [int(x[0][0][0][0]) for x in predictions]}, f)
     #with open("result_predictions_{}.pkl".format(args.rank), "wb") as f:
     #    print ("dumping predictions pickle file")
@@ -257,7 +265,8 @@ def main():
     # BATCH_SIZE = 2**11
     # BATCH_SIZE = 2**8
     # BATCH_SIZE = 2**15
-    BATCH_SIZE = 256
+    BATCH_SIZE = 2 ** 15
+
     # BATCH_SIZE = 4050
     # number of parallel data loading workers
     N_WORKERS = 4
@@ -277,13 +286,19 @@ def main():
     #args.world_size = ngpus_per_node * args.world_size
     # for one VM, it's just the number of GPUs
 
-    args.n_proc_per_gpu = 2
+    args.n_proc_per_gpu = 1
     args.world_size = N_GPU*args.n_proc_per_gpu
     args.dist_url = "tcp://127.0.0.1:12345"
     args.dist_backend = "nccl"
     #args.dist_backend = "gloo"
     args.seed = 0
+    args.debug = False
+
     args.batch_size = BATCH_SIZE
+    if args.debug:
+        args.batch_size = 2
+
+
     args.im_size = IM_SIZE
     args.dataset_name = DATASET_NAME
     args.n_classes = N_CLASSES
@@ -398,7 +413,7 @@ def main():
     predictions = []
     for i in range(args.world_size):
 
-        with open("results_{}.pkl".format(i), "r") as f:
+        with open("results_{}.json".format(i), "r") as f:
             dict = json.load(f)
 
         new_coord_list += dict['coords']
@@ -409,13 +424,21 @@ def main():
     def worker(classified_cube, coord):
         x, y, z = coord
         ind = new_coord_list.index(coord)
+        # print (coord, ind)
         pred_class = predictions[ind]
         classified_cube[x, y, z] = pred_class
 
     # launch workers in parallel with memory sharing ("threading" backend)
-    _ = Parallel(n_jobs=NUM_CORES, backend="threading")(
-        delayed(worker)(classified_cube, coord) for coord in tqdm(new_coord_list)
-    )
+    #_ = Parallel(n_jobs=4*NUM_CORES, backend="threading")(
+    #    delayed(worker)(classified_cube, coord) for coord in tqdm(new_coord_list)
+    #)
+
+    flat_coords = list(zip(*new_coord_list))
+    x_coords = flat_coords[0]
+    y_coords = flat_coords[1]
+    z_coords = flat_coords[2]
+
+    classified_cube[x_coords, y_coords, z_coords] = predictions
 
     print("-- writing segy --")
     in_file = join(DATASET_NAME, "data.segy".format(RESOLUTION))
