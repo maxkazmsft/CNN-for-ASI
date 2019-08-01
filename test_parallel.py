@@ -1,12 +1,12 @@
 # Compatability Imports
 from __future__ import print_function
 
+import argparse
 import os
-import pickle
 import json
-from copy import deepcopy
 
-N_GPU = 2
+# set default number of GPUs which are discoverable
+N_GPU = 1
 DEVICE_IDS = list(range(N_GPU))
 os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(x) for x in DEVICE_IDS])
 
@@ -16,24 +16,16 @@ import torch
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
 from torch.utils.data import Dataset, DataLoader
-from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
-import torch.multiprocessing as mp
-from torch.multiprocessing import Process, Manager
 
 if torch.cuda.is_available():
     device_str = os.environ["CUDA_VISIBLE_DEVICES"]
-    device = torch.device("cuda:"+device_str)
+    device = torch.device("cuda:" + device_str)
 else:
     raise Exception("No GPU detected for parallel scoring!")
 
 # ability to perform multiprocessing
 import multiprocessing
-from joblib import Parallel, delayed
-
-# use threading instead
-# from joblib.pool import has_shareable_memory
 
 from os.path import join
 from data import readSEGY, get_slice
@@ -46,21 +38,6 @@ from data import writeSEGY
 # graphical progress bar for notebooks
 from tqdm import tqdm
 
-class ProgressMeter(object):
-    def __init__(self, num_batches, meters, prefix=""):
-        self.batch_fmtstr = self._get_batch_fmtstr(num_batches)
-        self.meters = meters
-        self.prefix = prefix
-
-    def display(self, batch):
-        entries = [self.prefix + self.batch_fmtstr.format(batch)]
-        entries += [str(meter) for meter in self.meters]
-        print('\t'.join(entries))
-
-    def _get_batch_fmtstr(self, num_batches):
-        num_digits = len(str(num_batches // 1))
-        fmt = '{:' + str(num_digits) + 'd}'
-        return '[' + fmt + '/' + fmt.format(num_batches) + ']'
 
 class ModelWrapper(nn.Module):
     """
@@ -73,6 +50,7 @@ class ModelWrapper(nn.Module):
 
     def forward(self, input):
         return self.texture_model.classify(input)
+
 
 class MyDataset(Dataset):
     def __init__(self, data, window, coord_list):
@@ -95,77 +73,95 @@ class MyDataset(Dataset):
             z - self.window : z + self.window + 1,
         ]
 
-        return small_cube[np.newaxis, :, :, :], index
+        return small_cube[np.newaxis, :, :, :], pixel
 
     def __len__(self):
         return self.len
 
-def i_chunk(lst, n, i):
-    """Return i-th chunk after splitting the list into n equally sized chunks """
-    assert(i<n)
-    assert(i>=0)
-    avg = len(lst) / float(n)
-    last = 0.
-    counter = 0
-    while last < len(lst):
-        chunk = lst[int(last):int(last+avg)]
-        if counter == i:
-            return chunk
-        last += avg
-        counter += 1
-    return chunk
 
-
-#def main_worker(gpu, ngpus_per_node, result_queue, args):
 def main_worker(gpu, ngpus_per_node, args):
+    """
+    Main worker function, given the gpu parameter and how many GPUs there are per node
+    it can figure out its rank
 
-    print ("I got GPU", gpu)
-    args.gpu = gpu%ngpus_per_node
+    :param gpu: rank of the process if gpu >= ngpus_per_node, otherwise just gpu ID which worker will run on.
+    :param ngpus_per_node: total number of GPU available on this node.
+    :param args: various arguments for the code in the worker.
+    :return: nothing
+   """
+
+    print("I got GPU", gpu)
 
     args.rank = gpu
-    print("setting rank", args.rank, "world size", args.world_size, args.dist_backend, args.dist_url)
-    dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                            world_size=args.world_size, rank=args.rank)
 
+    # loop around in round-robin fashion if we want to run multiple processes per GPU
+    args.gpu = gpu % ngpus_per_node
+
+    # initialize the distributed process and join the group
+    print(
+        "setting rank",
+        args.rank,
+        "world size",
+        args.world_size,
+        args.dist_backend,
+        args.dist_url,
+    )
+    dist.init_process_group(
+        backend=args.dist_backend,
+        init_method=args.dist_url,
+        world_size=args.world_size,
+        rank=args.rank,
+    )
+
+    # set default GPU device for this worker
     torch.cuda.set_device(args.gpu)
-    device = torch.device("cuda:"+str(args.gpu))
+    # set up device for the rest of the code
+    device = torch.device("cuda:" + str(args.gpu))
 
     # Load trained model (run train.py to create trained
-    network = TextureNet(n_classes=args.n_classes)
-    #import time
-    #time.sleep(3600)
-    model_state_dict = torch.load(join(args.dataset_name, "saved_model.pt"), map_location=device)
+    network = TextureNet(n_classes=N_CLASSES)
+    model_state_dict = torch.load(
+        join(args.data, "saved_model.pt"), map_location=device
+    )
     network.load_state_dict(model_state_dict)
     network.eval()
     network.cuda(args.gpu)
 
+    # set the scoring wrapper also to eval mode
     model = ModelWrapper(network)
     model.eval()
     model.cuda(args.gpu)
 
     # When using a single GPU per process and per
     # DistributedDataParallel, we need to divide the batch size
-    # ourselves based on the total number of GPUs we have
+    # ourselves based on the total number of GPUs we have.
+    # Min batch size is 1
     args.batch_size = max(int(args.batch_size / ngpus_per_node), 1)
-    # number of data loading workers
-    args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
-    print(type(args.gpu), args.gpu)
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-    #network = torch.nn.parallel.DistributedDataParallel(network, device_ids=[args.gpu])
+    # obsolete: number of data loading workers - this is only used when reading from disk, which we're not
+    # args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
 
+    # wrap the model for distributed use
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+
+    # not sure why this is needed - original pyTorch example have this set to ON;
+    # possibly cuDNN thread safety when scoring
     cudnn.benchmark = True
 
-    # device = torch.device("cuda:" + str(args.gpu))
-
     # Read 3D cube
-    data, data_info = readSEGY(join(args.dataset_name, "data.segy"))
+    # NOTE: we cannot pass this data manually as serialization of data into each python process is costly,
+    # so each worker has to load the data on its own.
+    data, data_info = readSEGY(join(args.data, "data.segy"))
 
     # Get half window size
-    window = args.im_size // 2
-    nx, ny, nz = data.shape
+    window = IM_SIZE // 2
+
+    # reduce data size for debugging
+    if args.debug:
+        data = data[0 : 3 * window]
 
     # generate full list of coordinates
     # memory footprint of this isn't large yet, so not need to wrap as a generator
+    nx, ny, nz = data.shape
     x_list = range(window, nx - window)
     y_list = range(window, ny - window)
     z_list = range(window, nz - window)
@@ -174,31 +170,28 @@ def main_worker(gpu, ngpus_per_node, args):
     # TODO: is there any way to use a generator with pyTorch data loader?
     coord_list = list(itertools.product(x_list, y_list, z_list))
 
+    # we need to map the data manually to each rank - DistributedDataParallel doesn't do this at score time
     print("take a subset of coord_list by chunk")
     coord_list = list(np.array_split(np.array(coord_list), args.world_size)[args.rank])
     coord_list = [tuple(x) for x in coord_list]
 
+    # we only score first batch in debug mode
+    if args.debug:
+        coord_list = coord_list[0 : args.batch_size]
+
     # prepare the data
-    print ("setup dataset")
+    print("setup dataset")
     # TODO: RuntimeError: cannot pin 'torch.cuda.FloatTensor' only dense CPU tensors can be pinned
     data_torch = torch.cuda.FloatTensor(data).cuda(args.gpu, non_blocking=True)
     dataset = MyDataset(data_torch, window, coord_list)
-    # coord_list = dataset.get_coord_list()
-    # take a subset of coord_list by chunk
-    # coord_list = list(np.array_split(np.array(coord_list), args.world_size)[args.rank])
-    # coord_list = [tuple(x) for x in coord_list]
-    # dataset.set_coord_list(coord_list)
 
+    # not sampling like in training
     # datasampler = DistributedSampler(dataset)
     # just set some default epoch
-    #datasampler.set_epoch(1)
+    # datasampler.set_epoch(1)
 
-    #progress = ProgressMeter(
-    #    len(dataset),
-    #    [],
-    #    prefix="step: ")
-
-    print ("setting up loader")
+    # we use 0 workers because we're reading from memory
+    print("setting up loader")
     my_loader = DataLoader(
         dataset=dataset,
         batch_size=args.batch_size,
@@ -206,40 +199,101 @@ def main_worker(gpu, ngpus_per_node, args):
         num_workers=0,
         pin_memory=False,
         sampler=None
-        #sampler=datasampler
+        # sampler=datasampler
     )
 
-    print ("running loop")
+    print("running loop")
 
-    #indices = []
+    pixels = []
     predictions = []
 
     # Loop through center pixels in output cube
-    #for (chunk, index) in tqdm(my_loader):
     with torch.no_grad():
-        print ("no grad")
-        for (chunk, index) in tqdm(my_loader):
-            # print('i', index)
+        print("no grad")
+        for (chunk, pixel) in tqdm(my_loader):
             input = chunk.cuda(args.gpu, non_blocking=True)
             output = model(input)
             # save and deal with it later on CPU
-            #indices += index.tolist()
+            # we want to make sure order is preserved
+            pixels += list(zip(*pixel))
             predictions += output.tolist()
-            break
-            #if i % args.print_freq == 0:
-            #    progress.display(i)
+            # just score a single batch in debug mode
+            if args.debug:
+                break
 
-    print("here")
-    #result_queue.append([deepcopy(coord_list), deepcopy(predictions)])
+    # TODO: legacy Queue Manager code from multiprocessing which we left here for illustration purposes
+    # result_queue.append([deepcopy(coord_list), deepcopy(predictions)])
     # result_queue.append([coord_list, predictions])
-    with open("results_{}.pkl".format(args.rank), "w") as f:
-        json.dump({"coords": [(int(x[0]), int(x[1]), int(x[2])) for x in coord_list], "preds": [int(x[0][0][0][0]) for x in predictions]}, f)
-    #with open("result_predictions_{}.pkl".format(args.rank), "wb") as f:
+    with open("results_{}.json".format(args.rank), "w") as f:
+        json.dump(
+            {
+                "pixels": [(int(x[0]), int(x[1]), int(x[2])) for x in pixels],
+                "preds": [int(x[0][0][0][0]) for x in predictions],
+            },
+            f,
+        )
+
+    # TODO: we cannot use pickle do dump from multiprocess - processes lock up
+    # with open("result_predictions_{}.pkl".format(args.rank), "wb") as f:
     #    print ("dumping predictions pickle file")
     #    pickle.dump(predictions, f)
-    print('done')
 
-class Arguments: pass
+
+parser = argparse.ArgumentParser(description="PyTorch ImageNet Training")
+parser.add_argument(
+    "-d", "--data", default="F3", type=str, help="default dataset folder name"
+)
+parser.add_argument(
+    "-s",
+    "--slice",
+    default="inline",
+    type=str,
+    choices=["inline", "crossline", "timeslice", "full"],
+    help="slice type which we want to score on",
+)
+parser.add_argument(
+    "-n",
+    "--slice-num",
+    default=339,
+    type=int,
+    help="slice number which we want to score",
+)
+parser.add_argument(
+    "-b",
+    "--batch-size",
+    default=2 ** 15,
+    type=int,
+    help="batch size which we use for scoring",
+)
+parser.add_argument(
+    "-p",
+    "--n-proc-per-gpu",
+    default=1,
+    type=int,
+    help="number of multiple processes to run per each GPU",
+)
+parser.add_argument(
+    "--dist-url",
+    default="tcp://127.0.0.1:12345",
+    type=str,
+    help="url used to set up distributed training",
+)
+parser.add_argument(
+    "--dist-backend", default="nccl", type=str, help="distributed backend"
+)
+parser.add_argument("--seed", default=0, type=int, help="default random number seed")
+parser.add_argument(
+    "--debug",
+    action="store_true",
+    help="debug flag - if on we will only process one batch",
+)
+
+# static parameters
+RESOLUTION = 1
+# these match how the model is trained
+N_CLASSES = 2
+IM_SIZE = 65
+
 
 def main():
 
@@ -247,46 +301,21 @@ def main():
     # Parameters
     NUM_CORES = multiprocessing.cpu_count()
     print("Post-processing will run on {} CPU cores on your machine.".format(NUM_CORES))
-    DATASET_NAME = "F3"
-    IM_SIZE = 65
-    N_CLASSES = 2
-    RESOLUTION = 1
-    # Inline, crossline, timeslice or full
-    SLICE = "inline"
-    SLICE_NUM = 339
-    # BATCH_SIZE = 2**11
-    # BATCH_SIZE = 2**8
-    # BATCH_SIZE = 2**15
-    BATCH_SIZE = 256
-    # BATCH_SIZE = 4050
-    # number of parallel data loading workers
-    N_WORKERS = 4
 
     # use distributed scoring+
     if RESOLUTION != 1:
         raise Exception("Currently we only support pixel-level scoring")
 
-    # TODO: move these into parser with arguments
-    args = Arguments()
-    args.gpu = None
-    args.batch_size = BATCH_SIZE
-    args.workers = N_WORKERS
-    args.rank = 0
-    # for distributed world_size is the number of VMs initially, but actually it's the
-    # sum of GPUs across VMs
-    #args.world_size = ngpus_per_node * args.world_size
-    # for one VM, it's just the number of GPUs
+    args = parser.parse_args()
 
-    args.n_proc_per_gpu = 2
-    args.world_size = N_GPU*args.n_proc_per_gpu
-    args.dist_url = "tcp://127.0.0.1:12345"
-    args.dist_backend = "nccl"
-    #args.dist_backend = "gloo"
-    args.seed = 0
-    args.batch_size = BATCH_SIZE
-    args.im_size = IM_SIZE
-    args.dataset_name = DATASET_NAME
-    args.n_classes = N_CLASSES
+    args.gpu = None
+    args.rank = 0
+
+    # world size is the total number of processes we want to run across all nodes and GPUs
+    args.world_size = N_GPU * args.n_proc_per_gpu
+
+    if args.debug:
+        args.batch_size = 2
 
     # fix away any kind of randomness - although for scoring it should not matter
     random.seed(args.seed)
@@ -296,172 +325,131 @@ def main():
     print("RESOLUTION {}".format(RESOLUTION))
 
     ##########################################################################
-
-    # Log to tensorboard
-    #logger = tb_logger.TBLogger("log", "Test")
-    #logger.log_images(
-    #    SLICE + "_" + str(SLICE_NUM),
-    #    get_slice(data, data_info, SLICE, SLICE_NUM),
-    #    cm="gray",
-    #)
-
-    # unroll full cube
-    indices = []
-    predictions = []
-
     print("-- scoring on GPU --")
 
     ngpus_per_node = torch.cuda.device_count()
     print("nGPUs per node", ngpus_per_node)
 
-    # do our own spawning
-    #manager = Manager()
-    #return_dict = manager.dict()
-    # return_dict = [None]*N_GPU
-    # result_queue = multiprocessing.Queue()
-    # mp.spawn(main_worker, nprocs=args.world_size, args=(ngpus_per_node, args))
     """
+    First, read this: https://thelaziestprogrammer.com/python/a-multiprocessing-pool-pickle
+    
+    OK, so there are a few ways in which we can spawn a running process with pyTorch:
+    1) Default mp.spawn should work just fine but won't let us access internals
+    2) So we copied out the code from mp.spawn below to control how processes get created
+    3) One could spawn their own processes but that would not be thread-safe with CUDA, line
+    "mp = multiprocessing.get_context('spawn')" guarantees we use the proper pyTorch context
+    
+    Input data serialization is too costly, in general so is output data serialization as noted here:
+    https://docs.python.org/3/library/multiprocessing.html
+    
+    Feeding data into each process is too costly, so each process loads its own data.
+    
+    For deserialization we could try and fail using:
+    1) Multiprocessing queue manager
+    manager = Manager()
+    return_dict = manager.dict()
+    OR    
+    result_queue = multiprocessing.Queue()
+    CALLING
     with Manager() as manager:
         results_list = manager.list()
-        mp.spawn(main_worker, nprocs=args.world_size, args=(ngpus_per_node, results_list, args))
+        mp.spawn(main_worker, nprocs=args.world_size, args=(ngpus_per_node, results_list/dict/queue, args))
         results = deepcopy(results_list)
+    2) pickling results to disc.
+    
+    Turns out that for the reasons mentioned in the first article both approaches are too costly.
+    
+    The only reasonable way to deserialize data from a Python process is to write it to text, in which case
+    writing to JSON is a saner approach: https://www.datacamp.com/community/tutorials/pickle-python-tutorial
     """
-    #spawn_context = mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, return_dict, args), join = False)
-    #while not spawn_context.join():
-    #    pass
 
-
-    mp = multiprocessing.get_context('spawn')
+    # invoke processes manually suppressing error queue
+    mp = multiprocessing.get_context("spawn")
     # error_queues = []
     processes = []
     for i in range(args.world_size):
         # error_queue = mp.SimpleQueue()
         process = mp.Process(
-            target=main_worker,
-            args=(i, ngpus_per_node, args),
-            daemon=False,
+            target=main_worker, args=(i, ngpus_per_node, args), daemon=False
         )
         process.start()
         # error_queues.append(error_queue)
         processes.append(process)
 
+    # block on wait
     for process in processes:
         process.join()
 
-    # Loop on join until it returns True or raises an exception.
-    # while not spawn_context.join():
-
-
-
-    """
-    processes = []
-
-    for gpu in range(ngpus_per_node):
-        print ("starting thread ", gpu)
-        p = Process(target=main_worker, args=(gpu, ngpus_per_node, return_dict, args))
-        p.start()
-        processes += [p]
-
-    for proc in processes:
-        proc.join()
-
-    print (return_dict)
-    """
     print("-- aggregating results --")
 
-
     # Read 3D cube
-    data, data_info = readSEGY(join(args.dataset_name, "data.segy"))
+    data, data_info = readSEGY(join(args.data, "data.segy"))
 
+    # Log to tensorboard - input slice
+    logger = tb_logger.TBLogger("log", "Test")
+    logger.log_images(
+        args.slice + "_" + str(args.slice_num),
+        get_slice(data, data_info, args.slice, args.slice_num),
+        cm="gray",
+    )
+
+    # placeholder for results
     classified_cube = np.zeros(data.shape)
 
-    # Get half window size
-    window = args.im_size // 2
-    nx, ny, nz = data.shape
-
-    # generate full list of coordinates
-    # memory footprint of this isn't large yet, so not need to wrap as a generator
-    #x_list = range(window, nx - window)
-    #y_list = range(window, ny - window)
-    #z_list = range(window, nz - window)
-
-    #print("-- generating coord list --")
-    # TODO: is there any way to use a generator with pyTorch data loader?
-    #coord_list = list(itertools.product(x_list, y_list, z_list))
-    # coord_list = np.array_split(np.array(coord_list), args.world_size)
-
-    # coord_list = [tuple(x) for x in list(coord_list[args.rank])]
-
-    #print (results)
-
-    new_coord_list = []
+    pixels = []
     predictions = []
     for i in range(args.world_size):
-
-        with open("results_{}.pkl".format(i), "r") as f:
+        with open("results_{}.json".format(i), "r") as f:
             dict = json.load(f)
 
-        new_coord_list += dict['coords']
-        predictions += dict['preds']
+        pixels += dict["pixels"]
+        predictions += dict["preds"]
 
-    # assert(coord_list==new_coord_list)
-
+    """
+    So because of Python's GIL having multiple workers write to the same array is not efficient - basically
+    the only way we can have shared memory is with threading but thanks to GIL only one thread can execute at a time, 
+    so we end up with the overhead of managing multiple threads when writes happen sequentially.
+    
+    A much faster alternative is to just invoke underlying compiled code (C) through the use of array indexing.
+    
+    So basically instead of the following:
+    
     def worker(classified_cube, coord):
         x, y, z = coord
         ind = new_coord_list.index(coord)
+        # print (coord, ind)
         pred_class = predictions[ind]
         classified_cube[x, y, z] = pred_class
 
     # launch workers in parallel with memory sharing ("threading" backend)
-    _ = Parallel(n_jobs=NUM_CORES, backend="threading")(
-        delayed(worker)(classified_cube, coord) for coord in tqdm(new_coord_list)
+    _ = Parallel(n_jobs=4*NUM_CORES, backend="threading")(
+        delayed(worker)(classified_cube, coord) for coord in tqdm(pixels)
     )
+    
+    We do this:    
+    """
+
+    flat_coords = list(zip(*pixels))
+    x_coords = flat_coords[0]
+    y_coords = flat_coords[1]
+    z_coords = flat_coords[2]
+
+    # store ginal results
+    classified_cube[x_coords, y_coords, z_coords] = predictions
 
     print("-- writing segy --")
-    in_file = join(DATASET_NAME, "data.segy".format(RESOLUTION))
-    out_file = join(DATASET_NAME, "salt_{}.segy".format(RESOLUTION))
+    in_file = join(args.data, "data.segy".format(RESOLUTION))
+    out_file = join(args.data, "salt_{}.segy".format(RESOLUTION))
     writeSEGY(out_file, in_file, classified_cube)
 
     print("-- logging prediction --")
     # log prediction to tensorboard
     logger = tb_logger.TBLogger("log", "Test_scored")
     logger.log_images(
-        SLICE + "_" + str(SLICE_NUM),
-        get_slice(classified_cube, data_info, SLICE, SLICE_NUM),
+        args.slice + "_" + str(args.slice_num),
+        get_slice(classified_cube, data_info, args.slice, args.slice_num),
         cm="binary",
     )
 
-
 if __name__ == "__main__":
     main()
-
-"""
-print("-- aggregating results --")
-
-classified_cube = np.zeros(data.shape)
-
-def worker(classified_cube, ind):
-    x, y, z = coord_list[ind]
-    pred_class = predictions[ind][0][0][0][0]
-    classified_cube[x, y, z] = pred_class
-
-# launch workers in parallel with memory sharing ("threading" backend)
-_ = Parallel(n_jobs=NUM_CORES, backend="threading")(
-    delayed(worker)(classified_cube, ind) for ind in tqdm(indices)
-)
-
-print("-- writing segy --")
-in_file = join(DATASET_NAME, "data.segy".format(RESOLUTION))
-out_file = join(DATASET_NAME, "salt_{}.segy".format(RESOLUTION))
-writeSEGY(out_file, in_file, classified_cube)
-
-print("-- logging prediction --")
-# log prediction to tensorboard
-logger = tb_logger.TBLogger("log", "Test_scored")
-logger.log_images(
-    SLICE + "_" + str(SLICE_NUM),
-    get_slice(classified_cube, data_info, SLICE, SLICE_NUM),
-    cm="binary",
-)
-"""
-
