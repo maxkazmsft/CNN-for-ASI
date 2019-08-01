@@ -434,7 +434,7 @@ def main():
     y_coords = flat_coords[1]
     z_coords = flat_coords[2]
 
-    # store ginal results
+    # store final results
     classified_cube[x_coords, y_coords, z_coords] = predictions
 
     print("-- writing segy --")
