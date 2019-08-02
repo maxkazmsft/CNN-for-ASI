@@ -1,16 +1,22 @@
 # Compatability Imports
 from __future__ import print_function
 
-import argparse
 import os
-import json
 
 # set default number of GPUs which are discoverable
-N_GPU = 1
+N_GPU = 8
 DEVICE_IDS = list(range(N_GPU))
 os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(x) for x in DEVICE_IDS])
 
+# static parameters
+RESOLUTION = 1
+# these match how the model is trained
+N_CLASSES = 2
+IM_SIZE = 65
+
 import random
+import argparse
+import json
 
 import torch
 import torch.nn as nn
@@ -35,9 +41,8 @@ import numpy as np
 import tb_logger
 from data import writeSEGY
 
-# graphical progress bar for notebooks
+# graphical progress bar
 from tqdm import tqdm
-
 
 class ModelWrapper(nn.Module):
     """
@@ -204,7 +209,9 @@ def main_worker(gpu, ngpus_per_node, args):
 
     print("running loop")
 
-    pixels = []
+    pixels_x = []
+    pixels_y = []
+    pixels_z = []
     predictions = []
 
     # Loop through center pixels in output cube
@@ -215,7 +222,9 @@ def main_worker(gpu, ngpus_per_node, args):
             output = model(input)
             # save and deal with it later on CPU
             # we want to make sure order is preserved
-            pixels += list(zip(*pixel))
+            pixels_x += pixel[0].tolist()
+            pixels_y += pixel[1].tolist()
+            pixels_z += pixel[2].tolist()
             predictions += output.tolist()
             # just score a single batch in debug mode
             if args.debug:
@@ -224,10 +233,13 @@ def main_worker(gpu, ngpus_per_node, args):
     # TODO: legacy Queue Manager code from multiprocessing which we left here for illustration purposes
     # result_queue.append([deepcopy(coord_list), deepcopy(predictions)])
     # result_queue.append([coord_list, predictions])
+    # transform pixels into x, y, z list format
     with open("results_{}.json".format(args.rank), "w") as f:
         json.dump(
             {
-                "pixels": [(int(x[0]), int(x[1]), int(x[2])) for x in pixels],
+                "pixels_x": pixels_x,
+                "pixels_y": pixels_y,
+                "pixels_z": pixels_z,
                 "preds": [int(x[0][0][0][0]) for x in predictions],
             },
             f,
@@ -288,19 +300,7 @@ parser.add_argument(
     help="debug flag - if on we will only process one batch",
 )
 
-# static parameters
-RESOLUTION = 1
-# these match how the model is trained
-N_CLASSES = 2
-IM_SIZE = 65
-
-
 def main():
-
-    # TODO: wrap into parameters
-    # Parameters
-    NUM_CORES = multiprocessing.cpu_count()
-    print("Post-processing will run on {} CPU cores on your machine.".format(NUM_CORES))
 
     # use distributed scoring+
     if RESOLUTION != 1:
@@ -315,7 +315,7 @@ def main():
     args.world_size = N_GPU * args.n_proc_per_gpu
 
     if args.debug:
-        args.batch_size = 2
+        args.batch_size = 4
 
     # fix away any kind of randomness - although for scoring it should not matter
     random.seed(args.seed)
@@ -396,13 +396,17 @@ def main():
     # placeholder for results
     classified_cube = np.zeros(data.shape)
 
-    pixels = []
+    x_coords = []
+    y_coords = []
+    z_coords = []
     predictions = []
     for i in range(args.world_size):
         with open("results_{}.json".format(i), "r") as f:
             dict = json.load(f)
 
-        pixels += dict["pixels"]
+        x_coords += dict["pixels_x"]
+        y_coords += dict["pixels_y"]
+        z_coords += dict["pixels_z"]
         predictions += dict["preds"]
 
     """
@@ -413,6 +417,9 @@ def main():
     A much faster alternative is to just invoke underlying compiled code (C) through the use of array indexing.
     
     So basically instead of the following:
+    
+    NUM_CORES = multiprocessing.cpu_count()
+    print("Post-processing will run on {} CPU cores on your machine.".format(NUM_CORES))
     
     def worker(classified_cube, coord):
         x, y, z = coord
@@ -428,11 +435,6 @@ def main():
     
     We do this:    
     """
-
-    flat_coords = list(zip(*pixels))
-    x_coords = flat_coords[0]
-    y_coords = flat_coords[1]
-    z_coords = flat_coords[2]
 
     # store final results
     classified_cube[x_coords, y_coords, z_coords] = predictions
