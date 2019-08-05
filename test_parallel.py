@@ -145,11 +145,10 @@ def main_worker(gpu, ngpus_per_node, args):
     # obsolete: number of data loading workers - this is only used when reading from disk, which we're not
     # args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
 
-    # wrap the model for distributed use
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+    # wrap the model for distributed use - for scoring this is not needed
+    # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
 
-    # not sure why this is needed - original pyTorch example have this set to ON;
-    # possibly cuDNN thread safety when scoring
+    # set to benchmark mode because we're running the same workload multiple times
     cudnn.benchmark = True
 
     # Read 3D cube
@@ -393,9 +392,6 @@ def main():
         cm="gray",
     )
 
-    # placeholder for results
-    classified_cube = np.zeros(data.shape)
-
     x_coords = []
     y_coords = []
     z_coords = []
@@ -436,6 +432,8 @@ def main():
     We do this:    
     """
 
+    # placeholder for results
+    classified_cube = np.zeros(data.shape)
     # store final results
     classified_cube[x_coords, y_coords, z_coords] = predictions
 
