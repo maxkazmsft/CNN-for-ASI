@@ -4,7 +4,7 @@ from __future__ import print_function
 import os
 
 # set default number of GPUs which are discoverable
-N_GPU = 1
+N_GPU = 8
 DEVICE_IDS = list(range(N_GPU))
 os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(x) for x in DEVICE_IDS])
 BUFFER = 1
@@ -232,7 +232,7 @@ def main_worker(gpu, ngpus_per_node, args):
             # save and deal with it later on CPU
             # we want to make sure order is preserved
             # these are the center pixels of the scored voxel, but we need all pixels
-            for batch in range(args.batch_size):
+            for batch in range(array.shape[0]):
                 cube = array[batch,0,:,:,:]
                 # center pixel for the cube
                 x, y, z = int(pixel[0][batch]), int(pixel[1][batch]), int(pixel[2][batch])
@@ -292,7 +292,7 @@ parser.add_argument(
 parser.add_argument(
     "-b",
     "--batch-size",
-    default=2 ** 15,
+    default=(2**15 + 2**14)/2,
     type=int,
     help="batch size which we use for scoring",
 )
