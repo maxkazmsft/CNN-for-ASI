@@ -4,7 +4,7 @@ from __future__ import print_function
 import os
 
 # set default number of GPUs which are discoverable
-N_GPU = 8
+N_GPU = 1
 DEVICE_IDS = list(range(N_GPU))
 os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(x) for x in DEVICE_IDS])
 BUFFER = 1
@@ -232,17 +232,19 @@ def main_worker(gpu, ngpus_per_node, args):
             # save and deal with it later on CPU
             # we want to make sure order is preserved
             # these are the center pixels of the scored voxel, but we need all pixels
-            for batch in range(array.shape[0]):
-                cube = array[batch,0,:,:,:]
+            for batch_dim in range(array.shape[0]):
+                cube = array[batch_dim,0,:,:,:]
                 # center pixel for the cube
-                x, y, z = int(pixel[0][batch]), int(pixel[1][batch]), int(pixel[2][batch])
+                x, y, z = int(pixel[0][batch_dim]), int(pixel[1][batch_dim]), int(pixel[2][batch_dim])
                 # row_major order
                 cube_unrolled = cube.flatten(order = 'C')
                 index_list = np.unravel_index(range(len(cube_unrolled)), (3, 3, 3), order = 'C')
 
-                pixels_x += index_list[0].tolist()
-                pixels_y += index_list[1].tolist()
-                pixels_z += index_list[2].tolist()
+                # now we need to offset coordinates around the center pixel
+                # 0 maps to x-1, 1 maps to x, 2 maps to x+1, and so on
+                pixels_x += [x - 1 + coord for coord in index_list[0].tolist()]
+                pixels_y += [y - 1 + coord for coord in index_list[1].tolist()]
+                pixels_z += [z - 1 + coord for coord in index_list[2].tolist()]
                 predictions += cube_unrolled.tolist()
 
             # just score a single batch in debug mode
