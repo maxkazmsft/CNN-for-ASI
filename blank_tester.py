@@ -1,6 +1,5 @@
 # Compatability Imports
 from __future__ import print_function
-
 import os
 
 # set default number of GPUs which are discoverable
@@ -9,7 +8,6 @@ DEVICE_IDS = list(range(N_GPU))
 os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(x) for x in DEVICE_IDS])
 BUFFER = 1
 # static parameters
-# TODO: remove RESOLUTION
 RESOLUTION = 1
 # these match how the model is trained
 N_CLASSES = 2
@@ -31,12 +29,11 @@ if torch.cuda.is_available():
 else:
     raise Exception("No GPU detected for parallel scoring!")
 
-# basic multiprocessing which will use pyTorch context later
+# ability to perform multiprocessing
 import multiprocessing
 
 from os.path import join
 from data import readSEGY, get_slice
-from texture_net import TextureNetScore
 import itertools
 import numpy as np
 import tb_logger
@@ -44,6 +41,95 @@ from data import writeSEGY
 
 # graphical progress bar
 from tqdm import tqdm
+
+dtype = torch.float32
+device = torch.device("cuda:0")
+BATCH_SIZE = 2
+NUM_CHANNELS = 1
+BUFFER = 0
+WINDOW_SIZE = 65
+N_FILTER = 50
+SPAN = WINDOW_SIZE+2*BUFFER
+voxel = torch.randn(BATCH_SIZE, NUM_CHANNELS, SPAN, SPAN, SPAN)
+
+b  = nn.BatchNorm3d(N_FILTER)
+# nn.Dropout3d() #Droput can be added like this ...
+r = nn.ReLU()
+
+#padding = 2
+#(WINDOW_SIZE + 2*padding - kernel)/stride = dim = 17+2*buffer
+
+# hardcoding for BUFFER of size 1
+x1 = r(b(nn.Conv3d(1, N_FILTER, 5, 4, padding=5)(voxel)))
+x1.shape
+x2 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 2, padding=2, bias = False)(x1)))
+x2.shape
+x3 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 2, padding=2, bias = False)(x2)))
+x3.shape
+x4 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 2, padding=2, bias = False)(x3)))
+x4.shape
+x5 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 3, padding=2, bias = False)(x4)))
+x5.shape
+out = r(nn.Conv3d(N_FILTER, 2, 1, 1)(x5))
+out.shape
+value, index = torch.max(out, 1, keepdim=True)
+index
+
+c2 = nn.Conv3d(1, 50, 5, 1, padding=2)
+
+class TextureNet(nn.Module):
+    def __init__(self,n_classes=2):
+        super(TextureNet,self).__init__()
+
+        # Network definition
+        self.net = nn.Sequential(
+            # 1 channel in
+            # 50 channels out
+            # 5 kernel size (filter)
+            # 4 stride
+            # 2 padding
+            nn.Conv3d(1,50,5,4,padding=2), #Parameters  #in_channels, #out_channels, filter_size, stride (downsampling factor)
+            nn.BatchNorm3d(50),
+            #nn.Dropout3d() #Droput can be added like this ...
+            nn.ReLU(),
+        )
+        #The filter weights are by default initialized by random
+
+    #Is called to compute network output
+    def forward(self,x):
+        return self.net(x)
+
+    def classify(self,x):
+        x = self.net(x)
+        _, class_no = torch.max(x, 1, keepdim=True)
+        return class_no
+
+    # Functions to get output from intermediate feature layers
+    def f1(self, x,):
+        return self.getFeatures( x, 0)
+    def f2(self, x,):
+        return self.getFeatures( x, 1)
+    def f3(self, x,):
+        return self.getFeatures( x, 2)
+    def f4(self, x,):
+        return self.getFeatures( x, 3)
+    def f5(self, x,):
+        return self.getFeatures( x, 4)
+
+    def getFeatures(self, x, layer_no):
+        layer_indexes = [0, 3, 6, 9, 12]
+
+        #Make new network that has the layers up to the requested output
+        tmp_net = nn.Sequential()
+        layers = list(self.net.children())[0:layer_indexes[layer_no]+1]
+        for i in range(len(layers)):
+            tmp_net.add_module(str(i),layers[i])
+        if type(gpu_no_of_var(self)) == int:
+            tmp_net.cuda(gpu_no_of_var(self))
+        return tmp_net(x)
+
+
+
 
 class ModelWrapper(nn.Module):
     """
@@ -60,32 +146,24 @@ class ModelWrapper(nn.Module):
 
 class MyDataset(Dataset):
     def __init__(self, data, window, coord_list):
-
         # main array
         self.data = data
         self.coord_list = coord_list
         self.window = window
         self.len = len(coord_list)
+        self.buffer = BUFFER
 
     def __getitem__(self, index):
-
         # TODO: can we specify a pixel mathematically by index?
         pixel = self.coord_list[index]
         x, y, z = pixel
         # TODO: current bottleneck - can we slice out voxels any faster
         small_cube = self.data[
-            x - self.window - BUFFER: x + self.window + 1 + BUFFER,
-            y - self.window - BUFFER: y + self.window + 1 + BUFFER,
-            z - self.window - BUFFER: z + self.window + 1 + BUFFER,
-        ]
+                     x - self.window - BUFFER: x + self.window + 1 + BUFFER,
+                     y - self.window - BUFFER: y + self.window + 1 + BUFFER,
+                     z - self.window - BUFFER: z + self.window + 1 + BUFFER,
+                     ]
 
-        # return pixels for the cube
-        #x_list = range(x - self.window - BUFFER, x + self.window + 1 + BUFFER)
-        #y_list = range(y - self.window - BUFFER, y + self.window + 1 + BUFFER)
-        #z_list = range(z - self.window - BUFFER, z + self.window + 1 + BUFFER)
-        #coord_list = list(itertools.product(x_list, y_list, z_list))
-        # make sure cube coordinates line up with the coordinates which we're outputting
-        # small_cube = self.data[coord_list]
         return small_cube[np.newaxis, :, :, :], pixel
 
     def __len__(self):
@@ -132,7 +210,7 @@ def main_worker(gpu, ngpus_per_node, args):
     device = torch.device("cuda:" + str(args.gpu))
 
     # Load trained model (run train.py to create trained
-    network = TextureNetScore(n_classes=N_CLASSES)
+    network = TextureNet(n_classes=N_CLASSES)
     model_state_dict = torch.load(
         join(args.data, "saved_model.pt"), map_location=device
     )
@@ -166,17 +244,18 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # Get half window size
     window = IM_SIZE // 2
+    buffer = BUFFER
 
     # reduce data size for debugging
     if args.debug:
-        data = data[0 : 3 * window]
+        data = data[0: 3 * window]
 
     # generate full list of coordinates
     # memory footprint of this isn't large yet, so not need to wrap as a generator
     nx, ny, nz = data.shape
-    x_list = range(window+BUFFER, nx - window-BUFFER, 3*BUFFER)
-    y_list = range(window+BUFFER, ny - window-BUFFER, 3*BUFFER)
-    z_list = range(window+BUFFER, nz - window-BUFFER, 3*BUFFER)
+    x_list = range(window + buffer, nx - window - buffer)
+    y_list = range(window + buffer, ny - window - buffer)
+    z_list = range(window + buffer, nz - window - buffer)
 
     print("-- generating coord list --")
     # TODO: is there any way to use a generator with pyTorch data loader?
@@ -189,7 +268,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # we only score first batch in debug mode
     if args.debug:
-        coord_list = coord_list[0 : args.batch_size]
+        coord_list = coord_list[0: args.batch_size]
 
     # prepare the data
     print("setup dataset")
@@ -227,24 +306,12 @@ def main_worker(gpu, ngpus_per_node, args):
         for (chunk, pixel) in tqdm(my_loader):
             input = chunk.cuda(args.gpu, non_blocking=True)
             output = model(input)
-
-            array = np.array(output.cpu())
             # save and deal with it later on CPU
             # we want to make sure order is preserved
-            # these are the center pixels of the scored voxel, but we need all pixels
-            for batch in range(args.batch_size):
-                cube = array[batch,0,:,:,:]
-                # center pixel for the cube
-                x, y, z = int(pixel[0][batch]), int(pixel[1][batch]), int(pixel[2][batch])
-                # row_major order
-                cube_unrolled = cube.flatten(order = 'C')
-                index_list = np.unravel_index(range(len(cube_unrolled)), (3, 3, 3), order = 'C')
-
-                pixels_x += index_list[0].tolist()
-                pixels_y += index_list[1].tolist()
-                pixels_z += index_list[2].tolist()
-                predictions += cube_unrolled.tolist()
-
+            pixels_x += pixel[0].tolist()
+            pixels_y += pixel[1].tolist()
+            pixels_z += pixel[2].tolist()
+            predictions += output.tolist()
             # just score a single batch in debug mode
             if args.debug:
                 break
@@ -259,7 +326,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 "pixels_x": pixels_x,
                 "pixels_y": pixels_y,
                 "pixels_z": pixels_z,
-                "preds": predictions,
+                "preds": [int(x[0][0][0][0]) for x in predictions],
             },
             f,
         )
@@ -319,8 +386,8 @@ parser.add_argument(
     help="debug flag - if on we will only process one batch",
 )
 
-def main():
 
+def main():
     # use distributed scoring+
     if RESOLUTION != 1:
         raise Exception("Currently we only support pixel-level scoring")
@@ -335,11 +402,6 @@ def main():
 
     if args.debug:
         args.batch_size = 4
-        print("Setting debug mode batch size to {}".format(args.batch_size))
-
-    if args.batch_size < 2:
-        args.batch_size = 2
-        print ("Model batch size cannot be less than 2 due to BatchNorm3D layers - adjusting batch size to {}".format(args.batch_size))
 
     # fix away any kind of randomness - although for scoring it should not matter
     random.seed(args.seed)
@@ -356,18 +418,18 @@ def main():
 
     """
     First, read this: https://thelaziestprogrammer.com/python/a-multiprocessing-pool-pickle
-    
+
     OK, so there are a few ways in which we can spawn a running process with pyTorch:
     1) Default mp.spawn should work just fine but won't let us access internals
     2) So we copied out the code from mp.spawn below to control how processes get created
     3) One could spawn their own processes but that would not be thread-safe with CUDA, line
     "mp = multiprocessing.get_context('spawn')" guarantees we use the proper pyTorch context
-    
+
     Input data serialization is too costly, in general so is output data serialization as noted here:
     https://docs.python.org/3/library/multiprocessing.html
-    
+
     Feeding data into each process is too costly, so each process loads its own data.
-    
+
     For deserialization we could try and fail using:
     1) Multiprocessing queue manager
     manager = Manager()
@@ -380,9 +442,9 @@ def main():
         mp.spawn(main_worker, nprocs=args.world_size, args=(ngpus_per_node, results_list/dict/queue, args))
         results = deepcopy(results_list)
     2) pickling results to disc.
-    
+
     Turns out that for the reasons mentioned in the first article both approaches are too costly.
-    
+
     The only reasonable way to deserialize data from a Python process is to write it to text, in which case
     writing to JSON is a saner approach: https://www.datacamp.com/community/tutorials/pickle-python-tutorial
     """
@@ -434,14 +496,14 @@ def main():
     So because of Python's GIL having multiple workers write to the same array is not efficient - basically
     the only way we can have shared memory is with threading but thanks to GIL only one thread can execute at a time, 
     so we end up with the overhead of managing multiple threads when writes happen sequentially.
-    
+
     A much faster alternative is to just invoke underlying compiled code (C) through the use of array indexing.
-    
+
     So basically instead of the following:
-    
+
     NUM_CORES = multiprocessing.cpu_count()
     print("Post-processing will run on {} CPU cores on your machine.".format(NUM_CORES))
-    
+
     def worker(classified_cube, coord):
         x, y, z = coord
         ind = new_coord_list.index(coord)
@@ -453,7 +515,7 @@ def main():
     _ = Parallel(n_jobs=4*NUM_CORES, backend="threading")(
         delayed(worker)(classified_cube, coord) for coord in tqdm(pixels)
     )
-    
+
     We do this:    
     """
 
@@ -476,5 +538,3 @@ def main():
         cm="binary",
     )
 
-if __name__ == "__main__":
-    main()
