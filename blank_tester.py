@@ -46,30 +46,64 @@ dtype = torch.float32
 device = torch.device("cuda:0")
 BATCH_SIZE = 2
 NUM_CHANNELS = 1
-BUFFER = 0
+BUFFER = 1
 WINDOW_SIZE = 65
 N_FILTER = 50
 SPAN = WINDOW_SIZE+2*BUFFER
 voxel = torch.randn(BATCH_SIZE, NUM_CHANNELS, SPAN, SPAN, SPAN)
+#voxel = torch.randn(BATCH_SIZE, NUM_CHANNELS, 16, 16, 16)
+#voxel = torch.randn(BATCH_SIZE, NUM_CHANNELS, 14, 14, 14)
+slice = torch.randn(BATCH_SIZE, NUM_CHANNELS, 16, 16)
 
 b  = nn.BatchNorm3d(N_FILTER)
+b2  = nn.BatchNorm2d(N_FILTER)
 # nn.Dropout3d() #Droput can be added like this ...
 r = nn.ReLU()
+
+o1 = b(nn.Conv3d(1, N_FILTER, 5, 2, padding=2)(voxel))
+o1.shape # 18, 21, 18
+o2 = b(nn.Conv3d(N_FILTER, N_FILTER, 4, 2, padding=0, bias = False)(o1))
+o2.shape # 16
+x1 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 5, 1, padding=0, bias = False)(o2)))
+x1.shape # 12
+x2 = nn.MaxPool3d(2)(x1)
+x2.shape
+x3 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 5, 1, padding=0, bias = False)(x2)))
+x3.shape # 3
+out = r(nn.Conv3d(N_FILTER, 2, 1, 1)(x3))
+out.shape
 
 #padding = 2
 #(WINDOW_SIZE + 2*padding - kernel)/stride = dim = 17+2*buffer
 
 # hardcoding for BUFFER of size 1
-x1 = r(b(nn.Conv3d(1, N_FILTER, 5, 4, padding=5)(voxel)))
-x1.shape
-x2 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 2, padding=2, bias = False)(x1)))
-x2.shape
-x3 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 2, padding=2, bias = False)(x2)))
-x3.shape
-x4 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 2, padding=2, bias = False)(x3)))
-x4.shape
-x5 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 3, padding=2, bias = False)(x4)))
-x5.shape
+x1 = nn.MaxPool3d(2)(b(nn.Conv3d(1, N_FILTER, 5, 1, padding=0)(voxel)))
+x1.shape # 18, 21, 18
+x2 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 1, padding=1, bias = False)(x1)))
+x2.shape # 11, 10, 11
+x3 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 2, padding=1, bias = False)(x2)))
+x3.shape # 7, 5, 6
+x4 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 2, padding=1, bias = False)(x3)))
+x4.shape # 5, 3, 3
+x5 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 1, padding=1, bias = False)(x4)))
+x5.shape # 1,
+out = r(nn.Conv3d(N_FILTER, 2, 1, 1)(x5))
+out.shape
+value, index = torch.max(out, 1, keepdim=True)
+index
+
+
+# hardcoding for BUFFER of size 1
+x1 = b(nn.Conv3d(1, N_FILTER, 5, 4, padding=4)(voxel))
+x1.shape # 18, 21, 18
+x2 = nn.MaxPool3d(2)(r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 1, padding=1, bias = False)(x1))))
+x2.shape # 11, 10, 11
+x3 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 2, padding=1, bias = False)(x2)))
+x3.shape # 7, 5, 6
+x4 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 2, padding=1, bias = False)(x3)))
+x4.shape # 5, 3, 3
+x5 = nn.MaxPool3d(2)(r(b(nn.Conv3d(N_FILTER, N_FILTER, 3, 1, padding=1, bias = False)(x4))))
+x5.shape # 1,
 out = r(nn.Conv3d(N_FILTER, 2, 1, 1)(x5))
 out.shape
 value, index = torch.max(out, 1, keepdim=True)
