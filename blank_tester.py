@@ -46,29 +46,45 @@ dtype = torch.float32
 device = torch.device("cuda:0")
 BATCH_SIZE = 2
 NUM_CHANNELS = 1
-BUFFER = 1
+BUFFER = 0
 WINDOW_SIZE = 65
 N_FILTER = 50
 SPAN = WINDOW_SIZE+2*BUFFER
 voxel = torch.randn(BATCH_SIZE, NUM_CHANNELS, SPAN, SPAN, SPAN)
-#voxel = torch.randn(BATCH_SIZE, NUM_CHANNELS, 16, 16, 16)
-#voxel = torch.randn(BATCH_SIZE, NUM_CHANNELS, 14, 14, 14)
+# overfeat with odd number of pixels
+#voxel = torch.randn(BATCH_SIZE, NUM_CHANNELS, 17, 17, 17)
+#voxel = torch.randn(BATCH_SIZE, NUM_CHANNELS, 13, 13, 13)
 slice = torch.randn(BATCH_SIZE, NUM_CHANNELS, 16, 16)
 
 b  = nn.BatchNorm3d(N_FILTER)
 b2  = nn.BatchNorm2d(N_FILTER)
 # nn.Dropout3d() #Droput can be added like this ...
 r = nn.ReLU()
-
-o1 = b(nn.Conv3d(1, N_FILTER, 5, 2, padding=2)(voxel))
-o1.shape # 18, 21, 18
-o2 = b(nn.Conv3d(N_FILTER, N_FILTER, 4, 2, padding=0, bias = False)(o1))
-o2.shape # 16
+"""
+x1 = r(b(nn.Conv3d(1, N_FILTER, 5, 1, padding=0)(voxel)))
+x1.shape # 12
+x2 = nn.MaxPool3d(2, padding = 0)(x1)
+x2.shape
+x3 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 4, 1, padding=0, bias = False)(x2)))
+x3.shape # 3
+out = r(nn.Conv3d(N_FILTER, 2, 1, 1)(x3))
+out.shape
+"""
+BUFFER = 8
+#BUFFER = 0
+SPAN = WINDOW_SIZE+2*BUFFER
+voxel = torch.randn(BATCH_SIZE, NUM_CHANNELS, SPAN, SPAN, SPAN)
+o1 = r(b(nn.Conv3d(1, N_FILTER, 5, 4, padding=2)(voxel)))
+o1.shape # 17,
+o2 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 5, 1, padding=0, bias = False, dilation=1)(o1)))
+o2.shape # 13, 17
+#o3 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 2, 1, padding=0, bias = False)(o2)))
+#o3.shape # 16
 x1 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 5, 1, padding=0, bias = False)(o2)))
 x1.shape # 12
 x2 = nn.MaxPool3d(2)(x1)
 x2.shape
-x3 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 5, 1, padding=0, bias = False)(x2)))
+x3 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 4, 1, padding=0, bias = False)(x2)))
 x3.shape # 3
 out = r(nn.Conv3d(N_FILTER, 2, 1, 1)(x3))
 out.shape
