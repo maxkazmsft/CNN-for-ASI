@@ -78,10 +78,11 @@ class TextureNet(nn.Module):
             tmp_net.cuda(gpu_no_of_var(self))
         return tmp_net(x)
 
-class TextureNetScore(nn.Module):
+class TextureNetOverfeat(nn.Module):
     def __init__(self,n_classes=2):
-        super(TextureNetScore,self).__init__()
+        super(TextureNetOverfeat,self).__init__()
 
+        self.num_channels = 50
         # Network definition
         self.net = nn.Sequential(
             # 1 channel in
@@ -89,28 +90,30 @@ class TextureNetScore(nn.Module):
             # 5 kernel size (filter)
             # 4 stride
             # 2 padding
-            nn.Conv3d(1,50,5,4,padding=5), #Parameters  #in_channels, #out_channels, filter_size, stride (downsampling factor)
-            nn.BatchNorm3d(50),
+            nn.Conv3d(1,self.num_channels,5,4,padding=8), #Parameters  #in_channels, #out_channels, filter_size, stride (downsampling factor)
+            nn.BatchNorm3d(self.num_channels),
             #nn.Dropout3d() #Droput can be added like this ...
             nn.ReLU(),
 
-            nn.Conv3d(50,50,3,2,padding=2, bias=False),
-            nn.BatchNorm3d(50),
+            nn.Conv3d(self.num_channels,self.num_channels,5,1,padding=0, bias=False),
+            nn.BatchNorm3d(self.num_channels),
             nn.ReLU(),
 
-            nn.Conv3d(50,50,3,2,padding=2, bias=False),
-            nn.BatchNorm3d(50),
+            nn.Conv3d(self.num_channels,self.num_channels,4,1,padding=0, bias=False),
+            nn.BatchNorm3d(self.num_channels),
             nn.ReLU(),
 
-            nn.Conv3d(50,50,3,2,padding=2, bias=False),
-            nn.BatchNorm3d(50),
+            nn.Conv3d(self.num_channels,self.num_channels,5,1,padding=0, bias=False),
+            nn.BatchNorm3d(self.num_channels),
             nn.ReLU(),
 
-            nn.Conv3d(50,50,3,3,padding=2, bias=False),
-            nn.BatchNorm3d(50),
+            nn.MaxPool3d(2),
+
+            nn.Conv3d(self.num_channels,self.num_channels,4,1,padding=0, bias=False),
+            nn.BatchNorm3d(self.num_channels),
             nn.ReLU(),
 
-            nn.Conv3d(50,n_classes,1,1), #This is the equivalent of a fully connected layer since input has width/height/depth = 1
+            nn.Conv3d(self.num_channels,n_classes,1,1), #This is the equivalent of a fully connected layer since input has width/height/depth = 1
             nn.ReLU(),
 
         )

@@ -11,9 +11,6 @@ from torch.autograd import Variable
 from torch.utils.data import DataLoader, Dataset
 import tb_logger
 
-
-
-
 import numpy as np
 from utils import *
 #This is the network definition proposed in the paper
@@ -27,8 +24,8 @@ log_tensorboard = True #Log progress on tensor board
 if log_tensorboard: logger = tb_logger.TBLogger('log', 'Train')
 
 #See the texture_net.py file for the network configuration
-from texture_net import TextureNet
-network = TextureNet(n_classes=2)
+from texture_net import TextureNetOverfeat
+network = TextureNetOverfeat(n_classes=2)
 
 #Loss function
 cross_entropy = nn.CrossEntropyLoss() #Softmax function is included
@@ -118,7 +115,7 @@ for i in range(2000):
             logger.log_images( slice + '_' + str(slice_no) + '_pred_prob', class_img, i)
 
         #Store trained network
-        torch.save(network.state_dict(), join(dataset_name, 'saved_model.pt'))
+        torch.save(network.state_dict(), join(dataset_name, 'saved_model_of.pt'))
 
 
 

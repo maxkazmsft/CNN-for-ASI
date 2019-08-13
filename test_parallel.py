@@ -7,7 +7,8 @@ import os
 N_GPU = 1
 DEVICE_IDS = list(range(N_GPU))
 os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(x) for x in DEVICE_IDS])
-BUFFER = 1
+BUFFER = 8
+DIM_OUT = 3
 # static parameters
 # TODO: remove RESOLUTION
 RESOLUTION = 1
@@ -36,7 +37,7 @@ import multiprocessing
 
 from os.path import join
 from data import readSEGY, get_slice
-from texture_net import TextureNetScore
+from texture_net import TextureNetOverfeat
 import itertools
 import numpy as np
 import tb_logger
@@ -132,9 +133,9 @@ def main_worker(gpu, ngpus_per_node, args):
     device = torch.device("cuda:" + str(args.gpu))
 
     # Load trained model (run train.py to create trained
-    network = TextureNetScore(n_classes=N_CLASSES)
+    network = TextureNetOverfeat(n_classes=N_CLASSES)
     model_state_dict = torch.load(
-        join(args.data, "saved_model.pt"), map_location=device
+        join(args.data, "saved_model_of.pt"), map_location=device
     )
     network.load_state_dict(model_state_dict)
     network.eval()
@@ -164,19 +165,21 @@ def main_worker(gpu, ngpus_per_node, args):
     # so each worker has to load the data on its own.
     data, data_info = readSEGY(join(args.data, "data.segy"))
 
+    data = np.pad(data, BUFFER, mode='constant')
+
     # Get half window size
     window = IM_SIZE // 2
 
     # reduce data size for debugging
     if args.debug:
-        data = data[0 : 3 * window]
+        data = data[0 : 4 * window]
 
     # generate full list of coordinates
     # memory footprint of this isn't large yet, so not need to wrap as a generator
     nx, ny, nz = data.shape
-    x_list = range(window+BUFFER, nx - window-BUFFER, 3*BUFFER)
-    y_list = range(window+BUFFER, ny - window-BUFFER, 3*BUFFER)
-    z_list = range(window+BUFFER, nz - window-BUFFER, 3*BUFFER)
+    x_list = range(window+BUFFER, nx - window-BUFFER, DIM_OUT)
+    y_list = range(window+BUFFER, ny - window-BUFFER, DIM_OUT)
+    z_list = range(window+BUFFER, nz - window-BUFFER, DIM_OUT)
 
     print("-- generating coord list --")
     # TODO: is there any way to use a generator with pyTorch data loader?
@@ -238,7 +241,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 x, y, z = int(pixel[0][batch_dim]), int(pixel[1][batch_dim]), int(pixel[2][batch_dim])
                 # row_major order
                 cube_unrolled = cube.flatten(order = 'C')
-                index_list = np.unravel_index(range(len(cube_unrolled)), (3, 3, 3), order = 'C')
+                index_list = np.unravel_index(range(len(cube_unrolled)), (DIM_OUT, DIM_OUT, DIM_OUT), order = 'C')
 
                 # now we need to offset coordinates around the center pixel
                 # 0 maps to x-1, 1 maps to x, 2 maps to x+1, and so on

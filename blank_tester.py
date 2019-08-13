@@ -74,13 +74,13 @@ BUFFER = 8
 #BUFFER = 0
 SPAN = WINDOW_SIZE+2*BUFFER
 voxel = torch.randn(BATCH_SIZE, NUM_CHANNELS, SPAN, SPAN, SPAN)
-o1 = r(b(nn.Conv3d(1, N_FILTER, 5, 4, padding=2)(voxel)))
+o1 = r(b(nn.Conv3d(1, N_FILTER, 5, 4, padding=8)(voxel)))
 o1.shape # 17,
 o2 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 5, 1, padding=0, bias = False, dilation=1)(o1)))
 o2.shape # 13, 17
-#o3 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 2, 1, padding=0, bias = False)(o2)))
-#o3.shape # 16
-x1 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 5, 1, padding=0, bias = False)(o2)))
+o3 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 4, 1, padding=0, bias = False)(o2)))
+o3.shape # 16
+x1 = r(b(nn.Conv3d(N_FILTER, N_FILTER, 5, 1, padding=0, bias = False)(o3)))
 x1.shape # 12
 x2 = nn.MaxPool3d(2)(x1)
 x2.shape

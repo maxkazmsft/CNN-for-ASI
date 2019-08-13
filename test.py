@@ -40,16 +40,16 @@ slice = 'inline' #Inline, crossline, timeslice or full
 slice_no = 339
 #Log to tensorboard
 logger = tb_logger.TBLogger('log', 'Test')
-logger.log_images(slice+'_' + str(slice_no), get_slice(data, data_info, slice, slice_no),cm='gray')
+#logger.log_images(slice+'_' + str(slice_no), get_slice(data, data_info, slice, slice_no),cm='gray')
 
 """ Plot extracted features, class probabilities and salt-predictions for slice """
 #features (attributes) from layer 5
-im  = interpret( network.f5, data, data_info, slice, slice_no, im_size, resolution, use_gpu=use_gpu)
-logger.log_images(slice+'_' + str(slice_no)+' _f5', im)
+#im  = interpret( network.f5, data, data_info, slice, slice_no, im_size, resolution, use_gpu=use_gpu)
+#logger.log_images(slice+'_' + str(slice_no)+' _f5', im)
 
 #features from layer 4
-im  = interpret( network.f4, data, data_info, slice, slice_no, im_size, resolution, use_gpu=use_gpu)
-logger.log_images(slice+'_' + str(slice_no) +' _f4', im)
+#im  = interpret( network.f4, data, data_info, slice, slice_no, im_size, resolution, use_gpu=use_gpu)
+#logger.log_images(slice+'_' + str(slice_no) +' _f4', im)
 
 #Class "probabilities"
 im  = interpret( network, data, data_info, slice, slice_no, im_size, resolution, use_gpu=use_gpu)
