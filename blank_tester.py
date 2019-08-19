@@ -71,7 +71,7 @@ out = r(nn.Conv3d(N_FILTER, 2, 1, 1)(x3))
 out.shape
 """
 BUFFER = 8
-#BUFFER = 0
+# BUFFER = 0
 SPAN = WINDOW_SIZE+2*BUFFER
 voxel = torch.randn(BATCH_SIZE, NUM_CHANNELS, SPAN, SPAN, SPAN)
 o1 = r(b(nn.Conv3d(1, N_FILTER, 5, 4, padding=8)(voxel)))

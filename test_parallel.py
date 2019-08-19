@@ -1,13 +1,16 @@
 # Compatability Imports
+# https://github.com/equinor/segyviewer.git
+# use "conda install -c anaconda pyqt=4
+# and use python3.5 (not newer)
 from __future__ import print_function
 
 import os
 
 # set default number of GPUs which are discoverable
-N_GPU = 1
+N_GPU = 8
 DEVICE_IDS = list(range(N_GPU))
 os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(x) for x in DEVICE_IDS])
-BUFFER = 8
+BUFFER = 16
 DIM_OUT = 3
 # static parameters
 # TODO: remove RESOLUTION
@@ -37,7 +40,7 @@ import multiprocessing
 
 from os.path import join
 from data import readSEGY, get_slice
-from texture_net import TextureNetOverfeat
+from texture_net import TextureNetOverfeat_16 as TextureNetOverfeat
 import itertools
 import numpy as np
 import tb_logger
@@ -135,7 +138,7 @@ def main_worker(gpu, ngpus_per_node, args):
     # Load trained model (run train.py to create trained
     network = TextureNetOverfeat(n_classes=N_CLASSES)
     model_state_dict = torch.load(
-        join(args.data, "saved_model_of.pt"), map_location=device
+        join(args.data, "saved_model_of_{}.pt".format(BUFFER)), map_location=device
     )
     network.load_state_dict(model_state_dict)
     network.eval()
@@ -237,6 +240,11 @@ def main_worker(gpu, ngpus_per_node, args):
             # these are the center pixels of the scored voxel, but we need all pixels
             for batch_dim in range(array.shape[0]):
                 cube = array[batch_dim,0,:,:,:]
+
+                # debug offset:
+                # cube=np.zeros((3,3,3))
+                # cube[1,1,1] = 1
+
                 # center pixel for the cube
                 x, y, z = int(pixel[0][batch_dim]), int(pixel[1][batch_dim]), int(pixel[2][batch_dim])
                 # row_major order
@@ -297,7 +305,7 @@ parser.add_argument(
 parser.add_argument(
     "-b",
     "--batch-size",
-    default=(2**15 + 2**14)/2,
+    default=2**13,
     type=int,
     help="batch size which we use for scoring",
 )
@@ -468,13 +476,13 @@ def main():
     classified_cube[x_coords, y_coords, z_coords] = predictions
 
     print("-- writing segy --")
-    in_file = join(args.data, "data.segy".format(RESOLUTION))
-    out_file = join(args.data, "salt_{}.segy".format(RESOLUTION))
+    in_file = join(args.data, "data.segy")
+    out_file = join(args.data, "salt_of_{}.segy".format(BUFFER))
     writeSEGY(out_file, in_file, classified_cube)
 
     print("-- logging prediction --")
     # log prediction to tensorboard
-    logger = tb_logger.TBLogger("log", "Test_scored")
+    logger = tb_logger.TBLogger("log", "Test_scored_buffer_{}".format(BUFFER))
     logger.log_images(
         args.slice + "_" + str(args.slice_num),
         get_slice(classified_cube, data_info, args.slice, args.slice_num),

@@ -1,5 +1,11 @@
 # Compatability Imports
 from __future__ import print_function
+
+import os
+N_GPU = 1
+DEVICE_IDS = list(range(N_GPU))
+os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(x) for x in DEVICE_IDS])
+
 from os.path import join
 
 import torch
@@ -24,8 +30,9 @@ log_tensorboard = True #Log progress on tensor board
 if log_tensorboard: logger = tb_logger.TBLogger('log', 'Train')
 
 #See the texture_net.py file for the network configuration
-from texture_net import TextureNetOverfeat
+from texture_net import TextureNetOverfeat_8 as TextureNetOverfeat
 network = TextureNetOverfeat(n_classes=2)
+BUFFER = str(network.__class__).split('_')[2][:-2]
 
 #Loss function
 cross_entropy = nn.CrossEntropyLoss() #Softmax function is included
@@ -115,7 +122,7 @@ for i in range(2000):
             logger.log_images( slice + '_' + str(slice_no) + '_pred_prob', class_img, i)
 
         #Store trained network
-        torch.save(network.state_dict(), join(dataset_name, 'saved_model_of.pt'))
+        torch.save(network.state_dict(), join(dataset_name, 'saved_model_of_'+BUFFER+'.pt'))
 
 
 
