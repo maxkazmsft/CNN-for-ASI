@@ -30,7 +30,7 @@ log_tensorboard = True #Log progress on tensor board
 if log_tensorboard: logger = tb_logger.TBLogger('log', 'Train')
 
 #See the texture_net.py file for the network configuration
-from texture_net import TextureNetOverfeat_8 as TextureNetOverfeat
+from texture_net import TextureNetOverfeat_1 as TextureNetOverfeat
 network = TextureNetOverfeat(n_classes=2)
 BUFFER = str(network.__class__).split('_')[2][:-2]
 
@@ -57,7 +57,7 @@ if log_tensorboard:
 
 
 # Training loop
-for i in range(2000):
+for i in range(5000):
 
     # Get random training batch with augmentation
     # This is the bottle-neck for training and could be done more efficient on the GPU...

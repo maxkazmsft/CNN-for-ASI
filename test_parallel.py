@@ -10,7 +10,7 @@ import os
 N_GPU = 8
 DEVICE_IDS = list(range(N_GPU))
 os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(x) for x in DEVICE_IDS])
-BUFFER = 16
+BUFFER = 0
 DIM_OUT = 3
 # static parameters
 # TODO: remove RESOLUTION
@@ -40,7 +40,7 @@ import multiprocessing
 
 from os.path import join
 from data import readSEGY, get_slice
-from texture_net import TextureNetOverfeat_16 as TextureNetOverfeat
+from texture_net import TextureNetOverfeat_1 as TextureNetOverfeat
 import itertools
 import numpy as np
 import tb_logger
@@ -168,7 +168,8 @@ def main_worker(gpu, ngpus_per_node, args):
     # so each worker has to load the data on its own.
     data, data_info = readSEGY(join(args.data, "data.segy"))
 
-    data = np.pad(data, BUFFER, mode='constant')
+    if BUFFER > 0:
+        data = np.pad(data, BUFFER, mode='constant')
 
     # Get half window size
     window = IM_SIZE // 2
@@ -305,7 +306,7 @@ parser.add_argument(
 parser.add_argument(
     "-b",
     "--batch-size",
-    default=2**13,
+    default=2**12,
     type=int,
     help="batch size which we use for scoring",
 )
